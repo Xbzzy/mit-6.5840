@@ -13,7 +13,7 @@ import "net/rpc"
 import "hash/fnv"
 
 const (
-	midFileName    = "mr-mid-%d-%d"
+	midFileName    = "mr-mid-m%d-r%d"
 	outputFileName = "mr-out-%d"
 )
 
@@ -42,9 +42,8 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// send rpc to the coordinator, receive file path to start working
 	var (
-		rs        *GetTaskRS
-		err       error
-		allMidMap = make(map[int][]string)
+		rs  *GetTaskRS
+		err error
 	)
 	for {
 		rs, err = CallGetTask()
@@ -56,9 +55,9 @@ func Worker(mapf func(string, string) []KeyValue,
 		// start exec task
 		switch rs.TaskType {
 		case MapTask:
-			mapOneFile(rs.MapTask, rs.MapIndex, allMidMap, mapf, rs.ReduceCount)
+			mapOneFile(rs.MapTask, rs.MapIndex, mapf, rs.ReduceCount)
 		case ReduceTask:
-			reduceOneFile(rs.ReduceIndex, allMidMap[rs.ReduceIndex], reducef)
+			reduceOneFile(rs.ReduceIndex, reducef)
 		default:
 			time.Sleep(3 * time.Second)
 			fmt.Printf("Worker: Call GetMapTask task nil,keep 3 second waiting \n")
@@ -69,7 +68,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	fmt.Printf("Worker: Done \n")
 }
 
-func mapOneFile(path string, mapIndex int, allMidMap map[int][]string, mapf func(string, string) []KeyValue, reduceNum int) (midFileMap map[string]*TmpMidFile) {
+func mapOneFile(path string, mapIndex int, mapf func(string, string) []KeyValue, reduceNum int) (midFileMap map[string]*TmpMidFile) {
 	mapFile, err := os.Open(path)
 	if err != nil {
 		fmt.Printf("mapOneFile: Open Error: %v \n", err)
@@ -114,8 +113,6 @@ func mapOneFile(path string, mapIndex int, allMidMap map[int][]string, mapf func
 				enc:  json.NewEncoder(tmpFile),
 			}
 			midFileMap[tmpName] = tmpMid
-
-			allMidMap[reduceIndex] = append(allMidMap[reduceIndex], tmpName)
 		}
 
 		err = tmpMid.enc.Encode(&KV)
@@ -141,22 +138,28 @@ func mapOneFile(path string, mapIndex int, allMidMap map[int][]string, mapf func
 	return
 }
 
-func reduceOneFile(reduceIndex int, allMidFiles []string, reducef func(string, []string) string) {
-	if len(allMidFiles) == 0 {
+func checkMidReduceIndex(name string, index int) bool {
+	return strings.HasSuffix(name, fmt.Sprintf("-r%d", index))
+}
+
+func reduceOneFile(reduceIndex int, reducef func(string, []string) string) {
+	files, err := os.ReadDir("./")
+	if err != nil {
+		fmt.Printf("reduceOneFile: ReadDir Error: %v \n", err)
 		return
 	}
 
 	var (
-		tmpFile *os.File
-		err     error
-		keyMap  = make(map[string][]string)
+		tmpFile   *os.File
+		validFile []string
+		keyMap    = make(map[string][]string)
 	)
-	for _, name := range allMidFiles {
-		if !strings.HasSuffix(name, fmt.Sprintf("-%d", reduceIndex)) {
+	for _, file := range files {
+		if !checkMidReduceIndex(file.Name(), reduceIndex) {
 			continue
 		}
 
-		tmpFile, err = os.Open(name)
+		tmpFile, err = os.Open(file.Name())
 		if err != nil {
 			fmt.Printf("reduceOneFile: Open Error: %v \n", err)
 			continue
@@ -176,39 +179,46 @@ func reduceOneFile(reduceIndex int, allMidFiles []string, reducef func(string, [
 			fmt.Printf("reduceOneFile: Close Error: %v \n", err)
 		}
 
+		validFile = append(validFile, file.Name())
+	}
+
+	if len(keyMap) > 0 {
+		var tmpOutputFile *os.File
+		tmpOutputFile, err = os.CreateTemp("", "tmp")
+		if err != nil {
+			fmt.Printf("reduceOneFile: Create Error: %v \n", err)
+			return
+		}
+
+		for key, values := range keyMap {
+			result := reducef(key, values)
+
+			// this is the correct format for each line of Reduce output.
+			_, err = fmt.Fprintf(tmpOutputFile, "%v %v\n", key, result)
+			if err != nil {
+				fmt.Printf("reduceOneFile: Write Error: %v \n", err)
+				continue
+			}
+		}
+
+		realName := fmt.Sprintf(outputFileName, reduceIndex)
+		err = os.Rename(tmpOutputFile.Name(), realName)
+		if err != nil {
+			fmt.Printf("reduceOneFile: Rename Error: %v \n", err)
+			return
+		}
+
+		err = tmpOutputFile.Close()
+		if err != nil {
+			fmt.Printf("reduceOneFile: Close Error: %v \n", err)
+		}
+	}
+
+	for _, name := range validFile {
 		err = os.Remove(name)
 		if err != nil {
 			fmt.Printf("reduceOneFile: Remove Error: %v \n", err)
 		}
-	}
-
-	tmpOutputFile, err := os.CreateTemp("", "tmp")
-	if err != nil {
-		fmt.Printf("reduceOneFile: Create Error: %v \n", err)
-		return
-	}
-
-	for key, values := range keyMap {
-		result := reducef(key, values)
-
-		// this is the correct format for each line of Reduce output.
-		_, err = fmt.Fprintf(tmpOutputFile, "%v %v\n", key, result)
-		if err != nil {
-			fmt.Printf("reduceOneFile: Write Error: %v \n", err)
-			continue
-		}
-	}
-
-	realName := fmt.Sprintf(outputFileName, reduceIndex)
-	err = os.Rename(tmpOutputFile.Name(), realName)
-	if err != nil {
-		fmt.Printf("reduceOneFile: Rename Error: %v \n", err)
-		return
-	}
-
-	err = tmpOutputFile.Close()
-	if err != nil {
-		fmt.Printf("reduceOneFile: Close Error: %v \n", err)
 	}
 
 	go CallCompleteTask(ReduceTask, reduceIndex)
