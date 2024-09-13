@@ -59,15 +59,27 @@ func TestReElection3A(t *testing.T) {
 
 	leader1 := cfg.checkOneLeader()
 
+	if Debug {
+		fmt.Println("Test (3A): first check one leader success, leader:", leader1)
+	}
+
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
+
+	if Debug {
+		fmt.Println("Test (3A): second check one leader success")
+	}
 
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader. and the old leader
 	// should switch to follower.
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
+
+	if Debug {
+		fmt.Println("Test (3A): third check one leader success, leader:", leader2)
+	}
 
 	// if there's no quorum, no new leader should
 	// be elected.
@@ -79,13 +91,25 @@ func TestReElection3A(t *testing.T) {
 	// does not think it is the leader.
 	cfg.checkNoLeader()
 
+	if Debug {
+		fmt.Println("Test (3A): fourth check no leader success")
+	}
+
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
 	cfg.checkOneLeader()
 
+	if Debug {
+		fmt.Println("Test (3A): fifth check one leader success")
+	}
+
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
 	cfg.checkOneLeader()
+
+	if Debug {
+		fmt.Println("Test (3A): sixth check one leader success")
+	}
 
 	cfg.end()
 }
